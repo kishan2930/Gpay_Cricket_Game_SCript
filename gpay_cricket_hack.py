@@ -1,109 +1,86 @@
 import numpy as np
 import cv2
 from mss import mss
-from PIL import Image
 import os
 import time
-
 import pyautogui
 
-
+# Define screen capture area
 mon = {"left": 320, "top": 500, "width": 330, "height": 300}
 
-prev_y = 0
-ys = []
-params = cv2.SimpleBlobDetector.Params()
+# Blob detector setup
+params = cv2.SimpleBlobDetector_Params()
 params.filterByArea = True
 params.minArea = 200
 detector = cv2.SimpleBlobDetector.create(params)
 
-frames = []
+# Video Writer setup
+video_writer = cv2.VideoWriter("optimized_project.avi", cv2.VideoWriter_fourcc(*"XVID"), 30, (mon["width"], mon["height"]))
 
-MAX_FPS = 60
+prev_y = 0  # Previous y-position of the ball
+last_ball_time = time.time()  # Time of last detected ball
+click_threshold_y = 135  # Threshold to trigger a click
+click_delay = 0.2  # Time delay between clicks
+frame_count = 0  # Frame counter
 
 def click(x=360, y=300):
-    # os.system('adb shell "cd sdcard && dd if=./record1 of=/dev/input/event4"')
+    """ Simulate a tap at given coordinates. """
     os.system(f"adb shell input tap {x} {y}")
 
-
-def save_video(frames, frame_rate=60):
-    height, width, layers = frames[0].shape
-    size = (width, height)
-    out = cv2.VideoWriter("project.avi", cv2.VideoWriter_fourcc(*"DIVX"), frame_rate, size)
-    for i in range(len(frames)):
-        out.write(frames[i])
-    out.release()
-    print(f"video saved to project.avi")
-
 with mss() as sct:
-    start = time.time()
-    fc = 0
+    try:
+        while True:
+            start_time = time.time()
+            
+            # Capture frame
+            screenshot = sct.grab(mon)
+            frame = np.array(screenshot)
+            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, binary_frame = cv2.threshold(gray_frame, 150, 255, cv2.THRESH_BINARY)
 
-    prev_ball_detection_time = time.time()
-    # set up video capture at MAX_FPS
-    while True:
-        # if time.time() - prev_frame_time < ( 1 / MAX_FPS ):
-        #     continue
-        
-        prev_frame_time = time.time()
-        fc += 1
-        screenShot = sct.grab(mon)
-        data = np.array(screenShot)
-        data_gray = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
-        ret, data_gray = cv2.threshold(data_gray, 150, 255, cv2.THRESH_BINARY)
-        
-# Detect blobs.
-        keypoints = detector.detect(data_gray)
-        frame = cv2.drawKeypoints(data_gray, keypoints, np.array([]), (0,0,255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+            # Detect blobs (ball detection)
+            keypoints = detector.detect(binary_frame)
+            output_frame = cv2.drawKeypoints(binary_frame, keypoints, np.array([]), (0, 0, 255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+            
+            # Save frame to video file
+            video_writer.write(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-        # append numpy array as frame
-        # frames.append(cv2.cvtColor(data, cv2.COLOR_BGR2RGB))
-        frames.append(frame)
-        
-        if len(frames) > 1000:
-            # drop first 100 frames
-            frames = frames[100:]
+            if keypoints:
+                last_ball_time = time.time()  # Reset last ball detection time
+                x, y = keypoints[0].pt  # Get ball coordinates
 
-        if len(keypoints) > 0 and len(keypoints) <= 3:
-            prev_ball_detection_time = time.time()
-            x = keypoints[0].pt[0]
-            y = keypoints[0].pt[1]
+                # Compute speed (current y - previous y)
+                speed = y - prev_y
+                prev_y = y  # Update previous position
 
-            speed = y - prev_y
+                print(f"Speed: {speed:.2f}, Ball Position: {x:.2f}, {y:.2f}")
 
-            if speed > 0:
-                print(f"speed {speed:.2f} (y = {y:.2f})")
-                prev_y = y
-                
-            ys.append(y)
-            if y > 135:
-                p_x = np.random.randint(300, 400)
-                p_y = np.random.randint(300, 450)
-                pyautogui.click(x=p_x, y=p_y)
-                # click(p_x, p_y)
-                # click()
-                # add green tint to frame
-                frame[:, :, 1] = 255
-                pass
-        else:
-            ys = []
-            prev_y = 0
+                # Click logic (when ball reaches threshold)
+                if y > click_threshold_y:
+                    pyautogui.click(x=int(x), y=int(y) + np.random.randint(-10, 10))
+                    time.sleep(click_delay)  # Prevent spamming clicks
 
-        if time.time() - start >= 1:
-            print(f"FPS: {fc / (time.time() - start)}")
-            start = time.time()
-            fc = 0
+            # Handle case where ball is not detected for 3+ seconds
+            if time.time() - last_ball_time > 3:
+                last_ball_time = time.time()
+                pyautogui.click(x=600, y=1000)  # Possible restart button
 
-        if time.time() - prev_ball_detection_time > 3:
-            prev_ball_detection_time = time.time()
-            pyautogui.click(x=600, y=1000)
+            # Display frame
+            cv2.imshow("Cricket Bot", output_frame)
 
-        cv2.imshow("test", frame)
+            # Break if 'q' or 'ESC' is pressed
+            if cv2.waitKey(5) & 0xFF in (ord("q"), 27):
+                break
 
-        if cv2.waitKey(5) & 0xFF in (
-            ord("q"),
-            27,
-        ):
-            ## save frames as video
-            save_video(frames, 5)
-            break
+            # FPS control to prevent high CPU usage
+            elapsed_time = time.time() - start_time
+            sleep_time = max(0, (1 / 60) - elapsed_time)
+            time.sleep(sleep_time)
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+    finally:
+        video_writer.release()
+        cv2.destroyAllWindows()
+        print("Video saved successfully.")
